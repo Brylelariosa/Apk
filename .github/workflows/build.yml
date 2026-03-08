@@ -60,5 +60,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: App-v${{ github.run_number }}
-          path: ${{ steps.find_project.outputs.project_dir }}/app/build/outputs/apk/debug/app-debug.apk
+          # Wildcard captures all APKs (handles ABI splits: arm64, x86, universal, etc.)
+          path: ${{ steps.find_project.outputs.project_dir }}/app/build/outputs/apk/debug/*.apk
           retention-days: 30
