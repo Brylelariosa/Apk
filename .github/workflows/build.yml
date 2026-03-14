@@ -22,27 +22,35 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      # ── Cache NDK (path fixed to match actual install location) ──────────────
-      # Moved after setup-android so ANDROID_HOME is resolved correctly.
+      # ── Cache both NDK versions ───────────────────────────────────────────────
+      # 25.2 is what we explicitly install; 25.1 is what build.gradle requires
+      # (ndkVersion "25.1.8937393"). Without pre-installing 25.1, Gradle auto-
+      # downloads it during project configuration — burning ~13s every run.
       - name: Cache NDK
         id: cache-ndk
         uses: actions/cache@v4
         with:
-          path: ${{ env.ANDROID_HOME }}/ndk/25.2.9519653
-          key: ndk-25.2.9519653
+          path: |
+            ${{ env.ANDROID_HOME }}/ndk/25.2.9519653
+            ${{ env.ANDROID_HOME }}/ndk/25.1.8937393
+          key: ndk-25.2.9519653-25.1.8937393
 
       - name: Install NDK and CMake
         run: |
-          if [ ! -d "$ANDROID_SDK_ROOT/ndk/25.2.9519653" ]; then
-            sdkmanager --install "ndk;25.2.9519653" "cmake;3.22.1"
-          else
-            echo "NDK already installed — skipping download"
+          for NDK_VER in "25.2.9519653" "25.1.8937393"; do
+            if [ ! -d "$ANDROID_SDK_ROOT/ndk/$NDK_VER" ]; then
+              echo "Installing NDK $NDK_VER..."
+              sdkmanager --install "ndk;$NDK_VER"
+            else
+              echo "NDK $NDK_VER already present"
+            fi
+          done
+          if [ ! -d "$ANDROID_SDK_ROOT/cmake/3.22.1" ]; then
+            sdkmanager --install "cmake;3.22.1"
           fi
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/25.2.9519653" >> $GITHUB_ENV
 
-      # ── Gradle caching is handled entirely by setup-gradle. ──────────────────
-      # The manual actions/cache for ~/.gradle was removed — it was redundant
-      # and could conflict with setup-gradle's own cache management.
+      # ── Gradle caching is handled entirely by setup-gradle ───────────────────
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
@@ -68,7 +76,7 @@ jobs:
           echo "Found project at: $PROJECT_DIR"
           echo "project_dir=$PROJECT_DIR" >> $GITHUB_OUTPUT
 
-      # ── Cache C++ build outputs (avoids recompiling unchanged .cpp files) ─────
+      # ── Cache C++ build outputs ───────────────────────────────────────────────
       - name: Cache CMake / C++ build outputs
         uses: actions/cache@v4
         with:
@@ -76,9 +84,19 @@ jobs:
           key: cxx-${{ hashFiles('**/CMakeLists.txt', '**/core/*.cpp', '**/core/*.h', '**/jni_bridge.cpp') }}
           restore-keys: cxx-
 
+      # ── Wrapper generation: skip if gradlew already exists in the zip ─────────
+      # Previously this step took 1m 11s every run: it started a full Gradle
+      # daemon (53s), configured the project, and triggered an NDK auto-download.
+      # Most Android project zips already include gradlew, so we skip if present.
       - name: Generate Gradle Wrapper
         working-directory: ${{ steps.find_project.outputs.project_dir }}
-        run: gradle wrapper --gradle-version=8.6 --distribution-type=bin
+        run: |
+          if [ -f "gradlew" ]; then
+            echo "gradlew already present — skipping wrapper generation"
+          else
+            echo "No gradlew found — generating..."
+            gradle wrapper --gradle-version=8.6 --distribution-type=bin
+          fi
 
       - name: Make gradlew executable
         working-directory: ${{ steps.find_project.outputs.project_dir }}
@@ -86,10 +104,6 @@ jobs:
 
       - name: Build Debug APK
         working-directory: ${{ steps.find_project.outputs.project_dir }}
-        # --no-daemon:           daemons die with the container anyway — skip the startup cost
-        # --configuration-cache: skips the config phase on cache hits
-        # --build-cache:         reuses task outputs across builds
-        # --parallel:            builds modules in parallel
         run: ./gradlew assembleDebug --no-daemon --configuration-cache --build-cache --parallel
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
