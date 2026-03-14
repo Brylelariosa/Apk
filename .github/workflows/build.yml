@@ -13,14 +13,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # ── Cache NDK + CMake (saves ~60s — biggest single win) ───────────────
-      - name: Cache NDK
-        id: cache-ndk
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.tool_cache }}/ndk/25.2.9519653
-          key: ndk-25.2.9519653
-
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -29,6 +21,15 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+
+      # ── Cache NDK (path fixed to match actual install location) ──────────────
+      # Moved after setup-android so ANDROID_HOME is resolved correctly.
+      - name: Cache NDK
+        id: cache-ndk
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.ANDROID_HOME }}/ndk/25.2.9519653
+          key: ndk-25.2.9519653
 
       - name: Install NDK and CMake
         run: |
@@ -39,16 +40,9 @@ jobs:
           fi
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/25.2.9519653" >> $GITHUB_ENV
 
-      # ── Cache Gradle home (dependencies, wrapper jars) ────────────────────
-      - name: Cache Gradle home
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: gradle-
-
+      # ── Gradle caching is handled entirely by setup-gradle. ──────────────────
+      # The manual actions/cache for ~/.gradle was removed — it was redundant
+      # and could conflict with setup-gradle's own cache management.
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
@@ -74,7 +68,7 @@ jobs:
           echo "Found project at: $PROJECT_DIR"
           echo "project_dir=$PROJECT_DIR" >> $GITHUB_OUTPUT
 
-      # ── Cache C++ build outputs (avoids recompiling unchanged .cpp files) ─
+      # ── Cache C++ build outputs (avoids recompiling unchanged .cpp files) ─────
       - name: Cache CMake / C++ build outputs
         uses: actions/cache@v4
         with:
@@ -92,7 +86,11 @@ jobs:
 
       - name: Build Debug APK
         working-directory: ${{ steps.find_project.outputs.project_dir }}
-        run: ./gradlew assembleDebug --build-cache --parallel --daemon
+        # --no-daemon:           daemons die with the container anyway — skip the startup cost
+        # --configuration-cache: skips the config phase on cache hits
+        # --build-cache:         reuses task outputs across builds
+        # --parallel:            builds modules in parallel
+        run: ./gradlew assembleDebug --no-daemon --configuration-cache --build-cache --parallel
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
 
