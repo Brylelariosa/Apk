@@ -11,8 +11,8 @@ jobs:
 
     strategy:
       matrix:
-        buildType: [debug, release]   # ← runs two jobs in parallel
-      fail-fast: false                # ← don't cancel the other if one fails
+        buildType: [debug, release]
+      fail-fast: false
 
     steps:
       - name: Checkout code
@@ -95,9 +95,11 @@ jobs:
 
       - name: Make gradlew executable
         working-directory: ${{ steps.find_project.outputs.project_dir }}
-        run: chmod +x gradlew
+        run: |
+          chmod +x gradlew
+          sed -i 's/\r//' gradlew   # ← fix Windows CRLF line endings
 
-      - name: Build APK   # ← dynamically uses debug or release
+      - name: Build APK
         working-directory: ${{ steps.find_project.outputs.project_dir }}
         run: ./gradlew assemble${{ matrix.buildType == 'debug' && 'Debug' || 'Release' }} --no-daemon --configuration-cache --build-cache --parallel
         env:
@@ -106,6 +108,6 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: App-${{ matrix.buildType }}-v${{ github.run_number }}   # ← unique name per variant
+          name: App-${{ matrix.buildType }}-v${{ github.run_number }}
           path: ${{ steps.find_project.outputs.project_dir }}/app/build/outputs/apk/${{ matrix.buildType }}/*.apk
           retention-days: 30
