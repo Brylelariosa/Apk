@@ -9,6 +9,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    strategy:
+      matrix:
+        buildType: [debug, release]   # ← runs two jobs in parallel
+      fail-fast: false                # ← don't cancel the other if one fails
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -22,10 +27,6 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      # ── Cache both NDK versions ───────────────────────────────────────────────
-      # 25.2 is what we explicitly install; 25.1 is what build.gradle requires
-      # (ndkVersion "25.1.8937393"). Without pre-installing 25.1, Gradle auto-
-      # downloads it during project configuration — burning ~13s every run.
       - name: Cache NDK
         id: cache-ndk
         uses: actions/cache@v4
@@ -50,7 +51,6 @@ jobs:
           fi
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/25.2.9519653" >> $GITHUB_ENV
 
-      # ── Gradle caching is handled entirely by setup-gradle ───────────────────
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
@@ -76,18 +76,13 @@ jobs:
           echo "Found project at: $PROJECT_DIR"
           echo "project_dir=$PROJECT_DIR" >> $GITHUB_OUTPUT
 
-      # ── Cache C++ build outputs ───────────────────────────────────────────────
       - name: Cache CMake / C++ build outputs
         uses: actions/cache@v4
         with:
           path: ${{ steps.find_project.outputs.project_dir }}/app/.cxx
-          key: cxx-${{ hashFiles('**/CMakeLists.txt', '**/core/*.cpp', '**/core/*.h', '**/jni_bridge.cpp') }}
-          restore-keys: cxx-
+          key: cxx-${{ matrix.buildType }}-${{ hashFiles('**/CMakeLists.txt', '**/core/*.cpp', '**/core/*.h', '**/jni_bridge.cpp') }}
+          restore-keys: cxx-${{ matrix.buildType }}-
 
-      # ── Wrapper generation: skip if gradlew already exists in the zip ─────────
-      # Previously this step took 1m 11s every run: it started a full Gradle
-      # daemon (53s), configured the project, and triggered an NDK auto-download.
-      # Most Android project zips already include gradlew, so we skip if present.
       - name: Generate Gradle Wrapper
         working-directory: ${{ steps.find_project.outputs.project_dir }}
         run: |
@@ -102,15 +97,15 @@ jobs:
         working-directory: ${{ steps.find_project.outputs.project_dir }}
         run: chmod +x gradlew
 
-      - name: Build Debug APK
+      - name: Build APK   # ← dynamically uses debug or release
         working-directory: ${{ steps.find_project.outputs.project_dir }}
-        run: ./gradlew assembleDebug --no-daemon --configuration-cache --build-cache --parallel
+        run: ./gradlew assemble${{ matrix.buildType == 'debug' && 'Debug' || 'Release' }} --no-daemon --configuration-cache --build-cache --parallel
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: App-v${{ github.run_number }}
-          path: ${{ steps.find_project.outputs.project_dir }}/app/build/outputs/apk/debug/*.apk
+          name: App-${{ matrix.buildType }}-v${{ github.run_number }}   # ← unique name per variant
+          path: ${{ steps.find_project.outputs.project_dir }}/app/build/outputs/apk/${{ matrix.buildType }}/*.apk
           retention-days: 30
