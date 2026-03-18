@@ -89,15 +89,28 @@ jobs:
           key: cxx-${{ matrix.buildType }}-${{ hashFiles('**/CMakeLists.txt', '**/core/*.cpp', '**/core/*.h', '**/jni_bridge.cpp') }}
           restore-keys: cxx-${{ matrix.buildType }}-
 
-      - name: Generate Gradle Wrapper
+      # ── Fetch the real gradle-wrapper.jar ──────────────────────────────────
+      # Never commit this binary to git. We always download the canonical copy
+      # from Gradle's own release tag, matching the version in
+      # gradle-wrapper.properties. The size check catches silent download
+      # failures before they reach the build step.
+      - name: Fetch gradle-wrapper.jar
         working-directory: ${{ steps.find_project.outputs.project_dir }}
         run: |
-          if [ -f "gradlew" ]; then
-            echo "gradlew already present — skipping wrapper generation"
-          else
-            echo "No gradlew found — generating..."
-            gradle wrapper --gradle-version=8.6 --distribution-type=bin
+          GRADLE_VERSION="8.6"
+          JAR="gradle/wrapper/gradle-wrapper.jar"
+          mkdir -p gradle/wrapper
+          echo "Downloading gradle-wrapper.jar for Gradle ${GRADLE_VERSION}..."
+          curl --fail --silent --show-error --location \
+            "https://raw.githubusercontent.com/gradle/gradle/v${GRADLE_VERSION}.0/gradle/wrapper/gradle-wrapper.jar" \
+            -o "$JAR"
+          SIZE=$(stat -c%s "$JAR")
+          echo "Downloaded: $(ls -lh $JAR)"
+          if [ "$SIZE" -lt 10000 ]; then
+            echo "ERROR: gradle-wrapper.jar is suspiciously small (${SIZE} bytes) — aborting"
+            exit 1
           fi
+          echo "Jar size OK: ${SIZE} bytes"
 
       - name: Make gradlew executable
         working-directory: ${{ steps.find_project.outputs.project_dir }}
