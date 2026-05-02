@@ -1,5 +1,3 @@
---- FILE: /.github/workflows/build.yml ---
-
 name: Build APK
 
 on:
