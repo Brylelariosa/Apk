@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout code
@@ -119,7 +121,7 @@ jobs:
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
 
       - name: Delete zip from repo on build failure
-        if: failure() && steps.build.conclusion == 'failure'
+        if: failure()
         run: |
           ZIP="${{ env.zip_path }}"
           if [ -n "$ZIP" ] && [ -f "$ZIP" ]; then
