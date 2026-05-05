@@ -70,9 +70,11 @@ jobs:
         working-directory: ${{ steps.find_project.outputs.project_dir }}
         run: |
           if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
-            echo "gradle-wrapper.jar missing — regenerating via system gradle"
-            sudo apt-get install -y --no-install-recommends gradle
-            gradle wrapper --gradle-version 8.6
+            echo "gradle-wrapper.jar missing — downloading directly"
+            curl -fL \
+              "https://github.com/gradle/gradle/raw/v8.6.0/gradle/wrapper/gradle-wrapper.jar" \
+              -o gradle/wrapper/gradle-wrapper.jar
+            echo "Downloaded: $(ls -lh gradle/wrapper/gradle-wrapper.jar)"
           else
             echo "gradle-wrapper.jar already present — skipping"
           fi
