@@ -5,6 +5,23 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+# ─────────────────────────────────────────────────────────────────────────────
+# REQUIRED GITHUB SECRETS  (Settings → Secrets → Actions → New repository secret)
+#
+#   KEYSTORE_BASE64   → base64-encoded .jks file
+#                       Generate once:
+#                         keytool -genkey -v -keystore release.jks \
+#                           -alias quickshare -keyalg RSA -keysize 2048 \
+#                           -validity 10000
+#                       Then encode:
+#                         base64 -w 0 release.jks   (Linux)
+#                         base64 release.jks          (macOS)
+#
+#   STORE_PASSWORD    → keystore password chosen above
+#   KEY_ALIAS         → key alias chosen above  (e.g. "quickshare")
+#   KEY_PASSWORD      → key password chosen above
+# ─────────────────────────────────────────────────────────────────────────────
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -23,13 +40,13 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      # ── Android SDK (no NDK/CMake — QuickShare doesn't use native code) ──
+      # ── Android SDK ───────────────────────────────────────────────────────
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
-          packages: ''   # skip extra packages — build.gradle pulls what it needs
+          packages: ''
 
-      # ── Gradle cache (speeds up re-runs significantly) ────────────────────
+      # ── Gradle cache ──────────────────────────────────────────────────────
       - name: Cache Gradle packages
         uses: actions/cache@v4
         with:
@@ -48,6 +65,12 @@ jobs:
           gradle-version: wrapper
           cache-disabled: false
 
+      # ── Decode keystore from secret ───────────────────────────────────────
+      - name: Decode keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > $RUNNER_TEMP/release.jks
+          echo "KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> $GITHUB_ENV
+
       # ── Unzip project ─────────────────────────────────────────────────────
       - name: Unzip project
         run: |
@@ -56,7 +79,7 @@ jobs:
           echo "zip_name=$ZIP_NAME" >> $GITHUB_ENV
           unzip -q "$ZIP" -d extracted
 
-      # ── Find project root (wherever settings.gradle lives) ────────────────
+      # ── Find project root ─────────────────────────────────────────────────
       - name: Find project directory
         id: find_project
         run: |
@@ -74,9 +97,6 @@ jobs:
             curl -fL \
               "https://github.com/gradle/gradle/raw/v8.6.0/gradle/wrapper/gradle-wrapper.jar" \
               -o gradle/wrapper/gradle-wrapper.jar
-            echo "Downloaded: $(ls -lh gradle/wrapper/gradle-wrapper.jar)"
-          else
-            echo "gradle-wrapper.jar already present — skipping"
           fi
 
       # ── Permissions ───────────────────────────────────────────────────────
@@ -93,12 +113,11 @@ jobs:
             --parallel \
             --build-cache \
             --configuration-cache \
-            -Dorg.gradle.jvmargs="-Xmx3g" \
-            2>&1 | tee debug-build.log
+            -Dorg.gradle.jvmargs="-Xmx3g"
         env:
           GRADLE_OPTS: "-Dorg.gradle.daemon=false"
 
-      # ── Build Release APK (minified + shrunk) ─────────────────────────────
+      # ── Build Release APK (minified + auto-signed) ────────────────────────
       - name: Build Release APK
         working-directory: ${{ steps.find_project.outputs.project_dir }}
         run: |
@@ -107,28 +126,47 @@ jobs:
             --parallel \
             --build-cache \
             --configuration-cache \
-            -Dorg.gradle.jvmargs="-Xmx3g" \
-            2>&1 | tee release-build.log
+            -Dorg.gradle.jvmargs="-Xmx3g"
         env:
-          GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+          GRADLE_OPTS:    "-Dorg.gradle.daemon=false"
+          KEYSTORE_PATH:  ${{ env.KEYSTORE_PATH }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_ALIAS:      ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD:   ${{ secrets.KEY_PASSWORD }}
 
-      # ── Print APK sizes ───────────────────────────────────────────────────
-      - name: Print APK sizes
+      # ── Verify APK outputs ────────────────────────────────────────────────
+      - name: Verify APK outputs
         working-directory: ${{ steps.find_project.outputs.project_dir }}
         run: |
-          echo "=== APK sizes ==="
-          find app/build/outputs/apk -name "*.apk" -exec sh -c 'echo "$(du -sh "$1" | cut -f1)  $1"' _ {} \; | sort
+          echo "=== All APKs ==="
+          find app/build/outputs/apk -name "*.apk" | while read f; do
+            echo "  $(du -sh "$f" | cut -f1)  $f"
+          done
           echo ""
-          echo "=== Release APKs ==="
-          find app/build/outputs/apk/release -name "*.apk" 2>/dev/null || echo "No release APKs found"
+          echo "=== Release APK signed? ==="
+          RELEASE_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          if [ -n "$RELEASE_APK" ]; then
+            if jarsigner -verify "$RELEASE_APK" > /dev/null 2>&1; then
+              echo "SIGNED: $RELEASE_APK"
+            else
+              echo "WARNING: Unsigned APK (signing secrets not set?): $RELEASE_APK"
+            fi
+          fi
 
-      # ── Upload all artifacts ──────────────────────────────────────────────
-      - name: Upload APKs
+      # ── Upload Debug APK — separate artifact ──────────────────────────────
+      - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.zip_name }}-v${{ github.run_number }}
-          path: |
-            ${{ steps.find_project.outputs.project_dir }}/app/build/outputs/apk/debug/*.apk
-            ${{ steps.find_project.outputs.project_dir }}/app/build/outputs/apk/release/*.apk
+          name: ${{ env.zip_name }}-debug-build${{ github.run_number }}
+          path: ${{ steps.find_project.outputs.project_dir }}/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 30
-          if-no-files-found: warn
+          if-no-files-found: error
+
+      # ── Upload Release APK — separate artifact ────────────────────────────
+      - name: Upload Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.zip_name }}-release-build${{ github.run_number }}
+          path: ${{ steps.find_project.outputs.project_dir }}/app/build/outputs/apk/release/app-release.apk
+          retention-days: 30
+          if-no-files-found: error
