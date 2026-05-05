@@ -65,6 +65,18 @@ jobs:
           echo "project_dir=$PROJECT_DIR" >> $GITHUB_OUTPUT
           echo "Found project at: $PROJECT_DIR"
 
+      # ── Bootstrap Gradle wrapper jar if missing ───────────────────────────
+      - name: Bootstrap Gradle wrapper jar
+        working-directory: ${{ steps.find_project.outputs.project_dir }}
+        run: |
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            echo "gradle-wrapper.jar missing — regenerating via system gradle"
+            sudo apt-get install -y --no-install-recommends gradle
+            gradle wrapper --gradle-version 8.6
+          else
+            echo "gradle-wrapper.jar already present — skipping"
+          fi
+
       # ── Permissions ───────────────────────────────────────────────────────
       - name: Make gradlew executable
         working-directory: ${{ steps.find_project.outputs.project_dir }}
