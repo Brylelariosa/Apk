@@ -119,8 +119,8 @@ jobs:
       - name: Decode keystore (if available)
         id: keystore
         run: |
-          if [ -n "${{ secrets.KEYSTORE_B64 }}" ]; then
-            echo "${{ secrets.KEYSTORE_B64 }}" | base64 --decode > $RUNNER_TEMP/release.jks
+          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > $RUNNER_TEMP/release.jks
             echo "KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> $GITHUB_ENV
             echo "HAS_KEYSTORE=true" >> $GITHUB_ENV
             echo "Keystore decoded ✓"
@@ -136,9 +136,9 @@ jobs:
           if [ "${{ env.HAS_KEYSTORE }}" = "true" ]; then
             ./gradlew assembleRelease --no-daemon --configuration-cache --build-cache --parallel \
               -Pandroid.injected.signing.store.file="${{ env.KEYSTORE_PATH }}" \
-              -Pandroid.injected.signing.store.password="${{ secrets.KEYSTORE_PASS }}" \
-              -Pandroid.injected.signing.key.alias="${{ secrets.KEYSTORE_ALIAS }}" \
-              -Pandroid.injected.signing.key.password="${{ secrets.KEYSTORE_PASS }}"
+              -Pandroid.injected.signing.store.password="${{ secrets.STORE_PASSWORD }}" \
+              -Pandroid.injected.signing.key.alias="${{ secrets.KEY_ALIAS }}" \
+              -Pandroid.injected.signing.key.password="${{ secrets.KEY_PASSWORD }}"
           else
             ./gradlew assembleDebug --no-daemon --configuration-cache --build-cache --parallel
           fi
