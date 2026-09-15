@@ -179,16 +179,3 @@ jobs:
             git commit -m "ci: remove $ZIP after build #${{ github.run_number }} [skip ci]"
             git push
           fi
-
-      # Same cleanup on failure — also uses [skip ci] to stop the loop.
-      - name: Clean up - delete zip after failed build
-        if: failure()
-        run: |
-          ZIP="${{ env.zip_path }}"
-          if [ -n "$ZIP" ] && [ -f "$ZIP" ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git rm "$ZIP"
-            git commit -m "ci: remove $ZIP (build failed #${{ github.run_number }}) [skip ci]"
-            git push
-          fi
