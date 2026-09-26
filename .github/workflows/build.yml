@@ -168,6 +168,23 @@ jobs:
           path: ${{ steps.find_project.outputs.project_dir }}/${{ steps.apk.outputs.apk_path }}
           retention-days: 30
 
+      # R8/ProGuard's mapping.txt is only produced for buildTypes with
+      # isMinifyEnabled true — release, in this project. Uploading it here
+      # means an obfuscated crash stack trace can be decoded (via `retrace`
+      # or Android Studio's "Analyze Stack Trace") instead of reasoned about
+      # blind from renamed classes like `g0.u`, `B.v`. if-no-files-found is
+      # 'warn' rather than the default 'error' so a debug-only run (no
+      # mapping.txt at all) doesn't fail the job over a step that has
+      # nothing to upload.
+      - name: Upload mapping.txt
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.zip_name }}-mapping-v${{ github.run_number }}
+          path: ${{ steps.find_project.outputs.project_dir }}/app/build/outputs/mapping/release/mapping.txt
+          retention-days: 30
+          if-no-files-found: warn
+
       # Delete zip after successful build so leftover ZIPs never retrigger this workflow.
       # [skip ci] in the commit message prevents the deletion push from creating a new run.
       - name: Clean up - delete zip after successful build
