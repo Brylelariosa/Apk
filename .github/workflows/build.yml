@@ -83,7 +83,10 @@ jobs:
           echo "zip_name=$ZIP_NAME" >> $GITHUB_ENV
           echo "zip_path=$ZIP" >> $GITHUB_ENV
           echo "Found zip: $ZIP"
-          unzip -q "$ZIP" -d extracted
+          # -DD = ignore the timestamps stored in the ZIP; extracted files get the extraction time.
+          # ZIPs stamped ahead of the runner's clock make Ninja fail with
+          # "build.ninja still dirty after 100 tries".
+          unzip -q -DD "$ZIP" -d extracted
 
       - name: Find project directory
         id: find_project
