@@ -12,6 +12,9 @@ concurrency:
   group: build-apk-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  CARGO_TERM_COLOR: never
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -88,10 +91,11 @@ jobs:
           # "build.ninja still dirty after 100 tries".
           unzip -q -DD "$ZIP" -d extracted
 
+      # The shallowest settings.gradle wins, so a nested sample project can never be picked by mistake.
       - name: Find project directory
         id: find_project
         run: |
-          RESULT=$(find extracted -maxdepth 4 \( -name "settings.gradle" -o -name "settings.gradle.kts" \) | head -1)
+          RESULT=$(find extracted -maxdepth 4 \( -name "settings.gradle" -o -name "settings.gradle.kts" \) | awk '{ print length($0) " " $0 }' | sort -n | head -1 | cut -d" " -f2-)
           if [ -z "$RESULT" ]; then
             echo "##[error]No settings.gradle found inside the zip!"
             find extracted | sort
@@ -100,6 +104,132 @@ jobs:
           PROJECT_DIR=$(dirname "$RESULT")
           echo "Found project at: $PROJECT_DIR"
           echo "project_dir=$PROJECT_DIR" >> $GITHUB_OUTPUT
+
+      # ---------------------------------------------------------------- Rust (only for projects with a Cargo.toml)
+
+      # A project that contains a Cargo.toml has a Rust native library: it is compiled with cargo-ndk below and
+      # Gradle only packages it. Projects without a Cargo.toml build exactly as before.
+      - name: Detect Rust project
+        id: rust
+        run: |
+          PROJECT_DIR="${{ steps.find_project.outputs.project_dir }}"
+          CARGO_TOML=$(find "$PROJECT_DIR" -maxdepth 2 -name Cargo.toml -not -path '*/target/*' | awk '{ print length($0) " " $0 }' | sort -n | head -1 | cut -d" " -f2-)
+          if [ -n "$CARGO_TOML" ]; then
+            echo "has_rust=true" >> $GITHUB_OUTPUT
+            echo "cargo_dir=$(dirname "$CARGO_TOML")" >> $GITHUB_OUTPUT
+            echo "Rust crate found at: $(dirname "$CARGO_TOML")"
+          else
+            echo "has_rust=false" >> $GITHUB_OUTPUT
+            echo "No Cargo.toml - plain Gradle project"
+          fi
+
+      # ABIs come from 'rustAbis=' in the project's gradle.properties (default arm64-v8a), the same line the
+      # Gradle module reads, so the library and the APK always agree.
+      - name: Resolve Rust ABIs and targets
+        id: rust_cfg
+        if: steps.rust.outputs.has_rust == 'true'
+        run: |
+          PROJECT_DIR="${{ steps.find_project.outputs.project_dir }}"
+          ABIS=$(grep -E '^rustAbis=' "$PROJECT_DIR/gradle.properties" 2>/dev/null | head -1 | cut -d= -f2 | tr -d '\r' | tr ',' ' ')
+          if [ -z "$ABIS" ]; then ABIS="arm64-v8a"; fi
+          TARGETS=""
+          for A in $ABIS; do
+            case "$A" in
+              arm64-v8a)   TARGETS="$TARGETS aarch64-linux-android" ;;
+              armeabi-v7a) TARGETS="$TARGETS armv7-linux-androideabi" ;;
+              x86_64)      TARGETS="$TARGETS x86_64-linux-android" ;;
+              x86)         TARGETS="$TARGETS i686-linux-android" ;;
+              *) echo "##[warning]Unknown ABI '$A' in rustAbis - ignored" ;;
+            esac
+          done
+          echo "abis=$ABIS" >> $GITHUB_OUTPUT
+          echo "targets=$TARGETS" >> $GITHUB_OUTPUT
+          echo "ABIs: $ABIS"
+          echo "Rust targets: $TARGETS"
+
+      - name: Set up Rust toolchain
+        if: steps.rust.outputs.has_rust == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Android Rust targets
+        if: steps.rust.outputs.has_rust == 'true'
+        run: |
+          rustup target add ${{ steps.rust_cfg.outputs.targets }}
+          rustc --version
+          cargo --version
+
+      - name: Cache Rust build
+        if: steps.rust.outputs.has_rust == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ steps.rust.outputs.cargo_dir }}
+          cache-on-failure: true
+
+      - name: Cache cargo-ndk
+        id: cache-cargo-ndk
+        if: steps.rust.outputs.has_rust == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-ndk
+          key: cargo-ndk-4.1.2-${{ runner.os }}
+
+      - name: Install cargo-ndk
+        if: steps.rust.outputs.has_rust == 'true' && steps.cache-cargo-ndk.outputs.cache-hit != 'true'
+        run: cargo install cargo-ndk --version 4.1.2 --locked
+
+      # Rust targets the most recent LTS NDK, newer than the r25 used for CMake projects above. The runner image
+      # ships one (ANDROID_NDK_LATEST_HOME); otherwise r27 is installed.
+      - name: Select NDK for Rust
+        if: steps.rust.outputs.has_rust == 'true'
+        run: |
+          NDK=""
+          if [ -n "${ANDROID_NDK_LATEST_HOME:-}" ] && [ -d "$ANDROID_NDK_LATEST_HOME" ]; then
+            NDK="$ANDROID_NDK_LATEST_HOME"
+          fi
+          if [ -z "$NDK" ]; then
+            echo "Installing NDK 27.2.12479018..."
+            sdkmanager --install "ndk;27.2.12479018"
+            NDK="$ANDROID_SDK_ROOT/ndk/27.2.12479018"
+          fi
+          echo "NDK for Rust: $NDK"
+          echo "RUST_NDK_HOME=$NDK" >> $GITHUB_ENV
+
+      # Logic tests (terrain, meshing, physics, saves...) run on the build machine. They never block the APK;
+      # their result is only reported in this log.
+      - name: Run Rust unit tests (non-blocking)
+        if: steps.rust.outputs.has_rust == 'true'
+        continue-on-error: true
+        timeout-minutes: 20
+        working-directory: ${{ steps.rust.outputs.cargo_dir }}
+        run: |
+          set -o pipefail
+          cargo test --lib 2>&1 | tee rust-test.log
+          echo "---- test summary ----"
+          grep -E "^test result|FAILED|panicked" rust-test.log || true
+
+      - name: Build Rust library (cargo-ndk)
+        id: rust_build
+        if: steps.rust.outputs.has_rust == 'true'
+        working-directory: ${{ steps.rust.outputs.cargo_dir }}
+        env:
+          ANDROID_NDK_HOME: ${{ env.RUST_NDK_HOME }}
+          ANDROID_NDK_ROOT: ${{ env.RUST_NDK_HOME }}
+        run: |
+          set -o pipefail
+          JNI_DIR="$GITHUB_WORKSPACE/${{ steps.find_project.outputs.project_dir }}/app/src/main/jniLibs"
+          mkdir -p "$JNI_DIR"
+          ARGS=""
+          for A in ${{ steps.rust_cfg.outputs.abis }}; do ARGS="$ARGS -t $A"; done
+          cargo ndk --version
+          cargo ndk $ARGS -o "$JNI_DIR" build --release 2>&1 | tee rust-build.log
+          echo "---- built libraries ----"
+          find "$JNI_DIR" -name '*.so' -exec ls -la {} \;
+          if ! find "$JNI_DIR" -name 'libvoxelsandbox.so' | grep -q .; then
+            echo "##[error]cargo-ndk finished but produced no .so file"
+            exit 1
+          fi
+
+      # ---------------------------------------------------------------- Gradle
 
       - name: Cache CMake / C++ build outputs
         uses: actions/cache@v4
@@ -148,14 +278,19 @@ jobs:
         id: build
         working-directory: ${{ steps.find_project.outputs.project_dir }}
         run: |
+          # A Rust project's library was already built above; tell Gradle not to build it again.
+          EXTRA=""
+          if [ "${{ steps.rust.outputs.has_rust }}" = "true" ]; then
+            EXTRA="-PrustPrebuilt=true"
+          fi
           if [ "${{ env.HAS_KEYSTORE }}" = "true" ]; then
-            ./gradlew assembleRelease --no-daemon --configuration-cache --build-cache --parallel \
+            ./gradlew assembleRelease --no-daemon --configuration-cache --build-cache --parallel $EXTRA \
               -Pandroid.injected.signing.store.file="${{ env.KEYSTORE_PATH }}" \
               -Pandroid.injected.signing.store.password="${{ secrets.STORE_PASSWORD }}" \
               -Pandroid.injected.signing.key.alias="${{ secrets.KEY_ALIAS }}" \
               -Pandroid.injected.signing.key.password="${{ secrets.KEY_PASSWORD }}"
           else
-            ./gradlew assembleDebug --no-daemon --configuration-cache --build-cache --parallel
+            ./gradlew assembleDebug --no-daemon --configuration-cache --build-cache --parallel $EXTRA
           fi
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
@@ -198,7 +333,7 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
-      # On failure, keep Gradle/test/lint reports so the error can be inspected.
+      # On failure, keep Gradle/test/lint reports and the cargo logs so the error can be inspected.
       - name: Upload build reports (on failure)
         if: failure() && steps.find_project.outputs.project_dir != ''
         uses: actions/upload-artifact@v4
@@ -207,6 +342,8 @@ jobs:
           path: |
             ${{ steps.find_project.outputs.project_dir }}/app/build/reports
             ${{ steps.find_project.outputs.project_dir }}/build/reports
+            ${{ steps.find_project.outputs.project_dir }}/rust-build.log
+            ${{ steps.find_project.outputs.project_dir }}/rust-test.log
           retention-days: 7
           if-no-files-found: ignore
 
