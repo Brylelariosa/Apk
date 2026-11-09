@@ -194,8 +194,7 @@ jobs:
           echo "NDK for Rust: $NDK"
           echo "RUST_NDK_HOME=$NDK" >> $GITHUB_ENV
 
-      # Logic tests (terrain, meshing, physics, saves...) run on the build machine. They never block the APK;
-      # their result is only reported in this log.
+      # Logic tests run on the build machine. They never block the APK; their result is only reported in this log.
       - name: Run Rust unit tests (non-blocking)
         if: steps.rust.outputs.has_rust == 'true'
         continue-on-error: true
@@ -224,10 +223,13 @@ jobs:
           cargo ndk $ARGS -o "$JNI_DIR" build --release 2>&1 | tee rust-build.log
           echo "---- built libraries ----"
           find "$JNI_DIR" -name '*.so' -exec ls -la {} \;
-          if ! find "$JNI_DIR" -name 'libvoxelsandbox.so' | grep -q .; then
-            echo "##[error]cargo-ndk finished but produced no .so file"
-            exit 1
-          fi
+          # Generic check (any Rust project, any library name): every requested ABI must have a .so file.
+          for A in ${{ steps.rust_cfg.outputs.abis }}; do
+            if ! find "$JNI_DIR/$A" -maxdepth 1 -name '*.so' 2>/dev/null | grep -q .; then
+              echo "##[error]cargo-ndk produced no .so file for ABI $A"
+              exit 1
+            fi
+          done
 
       # ---------------------------------------------------------------- Gradle
 
